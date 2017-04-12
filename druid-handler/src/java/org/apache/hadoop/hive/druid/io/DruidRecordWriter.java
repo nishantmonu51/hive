@@ -24,11 +24,18 @@ import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Ordering;
 import com.metamx.common.Granularity;
+import com.metamx.common.IAE;
+
 import io.druid.data.input.Committer;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.MapBasedInputRow;
+import io.druid.metadata.MetadataStorageTablesConfig;
+import io.druid.metadata.SQLMetadataConnector;
 import io.druid.segment.indexing.DataSchema;
 import io.druid.segment.indexing.RealtimeTuningConfig;
 import io.druid.segment.loading.DataSegmentPusher;
@@ -40,20 +47,33 @@ import io.druid.segment.realtime.appenderator.SegmentNotWritableException;
 import io.druid.segment.realtime.appenderator.SegmentsAndMetadata;
 import io.druid.segment.realtime.plumber.Committers;
 import io.druid.timeline.DataSegment;
+import io.druid.timeline.TimelineObjectHolder;
+import io.druid.timeline.VersionedIntervalTimeline;
 import io.druid.timeline.partition.LinearShardSpec;
+import io.druid.timeline.partition.NumberedShardSpec;
+import io.druid.timeline.partition.PartitionChunk;
+
 import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.Constants;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
 import org.apache.hadoop.hive.druid.serde.DruidWritable;
+import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.RecordWriter;
 import org.apache.hadoop.mapred.Reporter;
 import org.joda.time.DateTime;
 import org.joda.time.Interval;
+import org.skife.jdbi.v2.Handle;
+import org.skife.jdbi.v2.Query;
+import org.skife.jdbi.v2.ResultIterator;
+import org.skife.jdbi.v2.TransactionCallback;
+import org.skife.jdbi.v2.TransactionStatus;
+import org.skife.jdbi.v2.util.ByteArrayMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,6 +82,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
@@ -85,13 +106,19 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
 
   private final Supplier<Committer> committerSupplier;
 
+  private final boolean overwrite;
+
+  private final MetadataStorageTablesConfig dbTables;
+  private final SQLMetadataConnector connector;
+
   public DruidRecordWriter(
           DataSchema dataSchema,
           RealtimeTuningConfig realtimeTuningConfig,
           DataSegmentPusher dataSegmentPusher,
           int maxPartitionSize,
           final Path segmentsDescriptorsDir,
-          final FileSystem fileSystem
+          final FileSystem fileSystem,
+          boolean overwrite
   ) {
     File basePersistDir = new File(realtimeTuningConfig.getBasePersistDirectory(),
             UUID.randomUUID().toString()
@@ -114,6 +141,12 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
             .checkNotNull(segmentsDescriptorsDir, "segmentsDescriptorsDir is null");
     this.fileSystem = Preconditions.checkNotNull(fileSystem, "file system is null");
     committerSupplier = Suppliers.ofInstance(Committers.nil());
+    this.overwrite = overwrite;
+    //this is the default value in druid
+    final String base = HiveConf
+        .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_BASE);
+    dbTables = MetadataStorageTablesConfig.fromBase(base);
+    connector = DruidStorageHandlerUtils.createSqlMetadataConnector();
   }
 
   /**
@@ -137,12 +170,19 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
 
     SegmentIdentifier retVal;
     if (currentOpenSegment == null) {
-      retVal = new SegmentIdentifier(
-              dataSchema.getDataSource(),
-              interval,
-              tuningConfig.getVersioningPolicy().getVersion(interval),
-              new LinearShardSpec(0)
-      );
+      if(overwrite) {
+        // Sine we are overwriting start with new version and 0 partitionNumber
+        retVal = new SegmentIdentifier(
+            dataSchema.getDataSource(),
+            interval,
+            tuningConfig.getVersioningPolicy().getVersion(interval),
+            new LinearShardSpec(0)
+        );
+      } else {
+        // Append to Existing segments if Any, Version used should be of existing segment.
+        retVal = allocateSegmentForAppend(interval, tuningConfig.getVersioningPolicy().getVersion(interval));
+      }
+
       currentOpenSegment = retVal;
       return retVal;
     } else if (currentOpenSegment.getInterval().equals(interval)) {
@@ -164,6 +204,8 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
         return retVal;
       }
     } else {
+      // This seems odd and breaking things here ---->>>>> Should we throw and error
+      // --->>>> What will happen to previously open segment.
       retVal = new SegmentIdentifier(
               dataSchema.getDataSource(),
               interval,
@@ -176,6 +218,162 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
       return retVal;
     }
   }
+
+
+  private SegmentIdentifier allocateSegmentForAppend(final Interval preferredInterval, final String maxVersion){
+    String dataSource = dataSchema.getDataSource();
+    return connector.retryTransaction(
+        new TransactionCallback<SegmentIdentifier>() {
+          @Override
+          public SegmentIdentifier inTransaction(Handle handle, TransactionStatus transactionStatus)
+              throws Exception {
+            // Make up a pending segment based on existing segments
+            final SegmentIdentifier newIdentifier;
+            final List<TimelineObjectHolder<String, DataSegment>> existingChunks = getTimelineForIntervalsWithHandle(
+                handle,
+                dataSource,
+                ImmutableList.of(preferredInterval)
+            ).lookup(preferredInterval);
+            if (existingChunks.size() > 1) {
+              // Not possible to expand more than one chunk with a single segment.
+              return null; // throw exception
+            }
+            if (existingChunks.isEmpty()) {
+              // No existing segments
+              return new SegmentIdentifier(
+                  dataSchema.getDataSource(),
+                  preferredInterval,
+                  tuningConfig.getVersioningPolicy().getVersion(preferredInterval),
+                  new LinearShardSpec(0)
+              );
+            }
+
+            SegmentIdentifier max = null;
+            TimelineObjectHolder<String, DataSegment> existingHolder = Iterables
+                .getOnlyElement(existingChunks);
+            for (PartitionChunk<DataSegment> existing : existingHolder.getObject()) {
+              if (max == null || max.getShardSpec().getPartitionNum() < existing.getObject()
+                  .getShardSpec()
+                  .getPartitionNum()) {
+                max = SegmentIdentifier.fromDataSegment(existing.getObject());
+              }
+            }
+
+            if (max == null) {
+              newIdentifier = new SegmentIdentifier(
+                  dataSource,
+                  preferredInterval,
+                  maxVersion,
+                  new NumberedShardSpec(0, 0)
+              );
+            } else if (!max.getInterval().equals(preferredInterval) || max.getVersion().compareTo(maxVersion) > 0) {
+              LOG.warn(
+                  "Cannot allocate new segment for dataSource[%s], interval[%s], maxVersion[%s]: conflicting segment[%s].",
+                  dataSource,
+                  preferredInterval,
+                  maxVersion,
+                  max.getIdentifierAsString()
+              );
+              return null;
+            } else if (max.getShardSpec() instanceof LinearShardSpec) {
+              newIdentifier = new SegmentIdentifier(
+                  dataSource,
+                  max.getInterval(),
+                  max.getVersion(),
+                  new LinearShardSpec(max.getShardSpec().getPartitionNum() + 1)
+              );
+            } else if (max.getShardSpec() instanceof NumberedShardSpec) {
+              newIdentifier = new SegmentIdentifier(
+                  dataSource,
+                  max.getInterval(),
+                  max.getVersion(),
+                  new NumberedShardSpec(
+                      max.getShardSpec().getPartitionNum() + 1,
+                      ((NumberedShardSpec) max.getShardSpec()).getPartitions()
+                  )
+              );
+            } else {
+              LOG.warn(
+                  "Cannot allocate new segment for dataSource[%s], interval[%s], maxVersion[%s]: ShardSpec class[%s] used by [%s].",
+                  dataSource,
+                  preferredInterval,
+                  maxVersion,
+                  max.getShardSpec().getClass(),
+                  max.getIdentifierAsString()
+              );
+              return null;
+            }
+            return newIdentifier;
+          }
+
+        },
+        SQLMetadataConnector.DEFAULT_MAX_TRIES,
+        SQLMetadataConnector.DEFAULT_MAX_TRIES
+    );
+  }
+
+  private VersionedIntervalTimeline<String, DataSegment> getTimelineForIntervalsWithHandle(
+      final Handle handle,
+      final String dataSource,
+      final List<Interval> intervals
+  ) throws IOException
+  {
+    if (intervals == null || intervals.isEmpty()) {
+      throw new IAE("null/empty intervals");
+    }
+
+    final StringBuilder sb = new StringBuilder();
+    sb.append("SELECT payload FROM %s WHERE used = true AND dataSource = ? AND (");
+    for (int i = 0; i < intervals.size(); i++) {
+      sb.append(
+          "(start <= ? AND \"end\" >= ?)"
+      );
+      if (i == intervals.size() - 1) {
+        sb.append(")");
+      } else {
+        sb.append(" OR ");
+      }
+    }
+
+    Query<Map<String, Object>> sql = handle.createQuery(
+        String.format(
+            sb.toString(),
+            dbTables.getSegmentsTable()
+        )
+    ).bind(0, dataSource);
+
+    for (int i = 0; i < intervals.size(); i++) {
+      Interval interval = intervals.get(i);
+      sql = sql
+          .bind(2 * i + 1, interval.getEnd().toString())
+          .bind(2 * i + 2, interval.getStart().toString());
+    }
+
+    final ResultIterator<byte[]> dbSegments = sql
+        .map(ByteArrayMapper.FIRST)
+        .iterator();
+
+    final VersionedIntervalTimeline<String, DataSegment> timeline = new VersionedIntervalTimeline<>(
+        Ordering.natural()
+    );
+
+    while (dbSegments.hasNext()) {
+      final byte[] payload = dbSegments.next();
+
+      DataSegment segment = DruidStorageHandlerUtils.JSON_MAPPER.readValue(
+          payload,
+          DataSegment.class
+      );
+
+      timeline.add(segment.getInterval(), segment.getVersion(), segment.getShardSpec().createChunk(segment));
+
+    }
+
+    dbSegments.close();
+
+    return timeline;
+  }
+
 
   private void pushSegments(List<SegmentIdentifier> segmentsToPush) {
     try {

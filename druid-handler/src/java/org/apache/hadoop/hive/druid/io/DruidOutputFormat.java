@@ -30,6 +30,7 @@ import io.druid.data.input.impl.StringDimensionSchema;
 import io.druid.data.input.impl.TimeAndDimsParseSpec;
 import io.druid.data.input.impl.TimestampSpec;
 import io.druid.granularity.QueryGranularity;
+import io.druid.metadata.SQLMetadataConnector;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.DoubleSumAggregatorFactory;
 import io.druid.query.aggregation.LongSumAggregatorFactory;
@@ -42,6 +43,7 @@ import io.druid.segment.indexing.granularity.GranularitySpec;
 import io.druid.segment.indexing.granularity.UniformGranularitySpec;
 import io.druid.segment.loading.DataSegmentPusher;
 import io.druid.segment.realtime.plumber.CustomVersioningPolicy;
+import io.druid.segment.realtime.plumber.VersioningPolicy;
 import io.druid.storage.hdfs.HdfsDataSegmentPusher;
 import io.druid.storage.hdfs.HdfsDataSegmentPusherConfig;
 import org.apache.calcite.adapter.druid.DruidTable;
@@ -64,6 +66,8 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RecordWriter;
 import org.apache.hadoop.util.Progressable;
+
+import org.joda.time.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -209,11 +213,14 @@ public class DruidOutputFormat<K, V> implements HiveOutputFormat<K, DruidWritabl
     } else {
       indexSpec = new IndexSpec(new RoaringBitmapSerdeFactory(true), null, null, null);
     }
+
+    VersioningPolicy versioningPolicy = new CustomVersioningPolicy(version);
+    String overwrite = jc.get(Constants.INSERT_OVERWRITE);
     RealtimeTuningConfig realtimeTuningConfig = new RealtimeTuningConfig(maxRowInMemory,
             null,
             null,
             new File(basePersistDirectory, dataSource),
-            new CustomVersioningPolicy(version),
+            versioningPolicy,
             null,
             null,
             null,
@@ -228,7 +235,8 @@ public class DruidOutputFormat<K, V> implements HiveOutputFormat<K, DruidWritabl
     LOG.debug(String.format("running with Data schema [%s] ", dataSchema));
     return new DruidRecordWriter(dataSchema, realtimeTuningConfig, hdfsDataSegmentPusher,
             maxPartitionSize, new Path(workingPath, SEGMENTS_DESCRIPTOR_DIR_NAME),
-            finalOutPath.getFileSystem(jc)
+            finalOutPath.getFileSystem(jc),
+            overwrite != null && Boolean.valueOf(overwrite)
     );
   }
 

@@ -37,6 +37,8 @@ public class Constants {
   public static final String DRUID_QUERY_FETCH = "druid.query.fetch";
   public static final String DRUID_SEGMENT_DIRECTORY = "druid.storage.storageDirectory";
   public static final String DRUID_SEGMENT_VERSION = "druid.segment.version";
+  public static final String INSERT_OVERWRITE = "hive.query.is,overwrite";
+
   public static final String DRUID_JOB_WORKING_DIRECTORY = "druid.job.workingDirectory";
 
   public static final String HIVE_SERVER2_JOB_CREDSTORE_PASSWORD_ENVVAR = "HIVE_JOB_CREDSTORE_PASSWORD";

@@ -62,6 +62,7 @@ import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.common.ObjectPair;
 import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.common.StatsSetupConst.StatDB;
+import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.conf.HiveConf.StrictChecks;
@@ -7195,7 +7196,10 @@ public class SemanticAnalyzer extends BaseSemanticAnalyzer {
         || dest_type.intValue() == QBMetaData.DEST_PARTITION) {
       genPartnCols(dest, input, qb, table_desc, dest_tab, rsCtx);
     }
-
+    // true if it is insert overwrite.
+    boolean overwrite = !qb.getParseInfo().isInsertIntoTable(
+        String.format("%s.%s", dest_tab.getDbName(), dest_tab.getTableName()));
+    table_desc.getProperties().setProperty(Constants.INSERT_OVERWRITE, String.valueOf(overwrite));
     FileSinkDesc fileSinkDesc = new FileSinkDesc(
       queryTmpdir,
       table_desc,

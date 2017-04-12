@@ -20,6 +20,8 @@ package org.apache.hadoop.hive.druid;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.NamedType;
 import com.fasterxml.jackson.dataformat.smile.SmileFactory;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Interner;
@@ -34,9 +36,11 @@ import com.metamx.http.client.HttpClient;
 import com.metamx.http.client.Request;
 import com.metamx.http.client.response.InputStreamResponseHandler;
 import io.druid.jackson.DefaultObjectMapper;
+import io.druid.metadata.MetadataStorageConnectorConfig;
 import io.druid.metadata.MetadataStorageTablesConfig;
 import io.druid.metadata.SQLMetadataConnector;
 import io.druid.metadata.storage.mysql.MySQLConnector;
+import io.druid.metadata.storage.postgresql.PostgreSQLConnector;
 import io.druid.query.BaseQuery;
 import io.druid.segment.IndexIO;
 import io.druid.segment.IndexMergerV9;
@@ -48,7 +52,9 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.JavaUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryProxy;
 import org.apache.hadoop.util.StringUtils;
@@ -314,6 +320,8 @@ public final class DruidStorageHandlerUtils {
     );
   }
 
+
+
   /**
    * @param connector                   SQL connector to metadata
    * @param metadataStorageTablesConfig Tables configuration
@@ -467,4 +475,48 @@ public final class DruidStorageHandlerUtils {
     conf.set("tmpjars", StringUtils.arrayToString(jars.toArray(new String[jars.size()])));
   }
 
+  public static SQLMetadataConnector createSqlMetadataConnector(){
+    //this is the default value in druid
+    final String base = HiveConf
+        .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_BASE);
+    final String dbType = HiveConf
+        .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_TYPE);
+    final String username = HiveConf
+        .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_USERNAME);
+    final String password = HiveConf
+        .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_PASSWORD);
+    final String uri = HiveConf
+        .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_URI);
+    final MetadataStorageTablesConfig druidMetadataStorageTablesConfig = MetadataStorageTablesConfig.fromBase(base);
+
+    final Supplier<MetadataStorageConnectorConfig> storageConnectorConfigSupplier = Suppliers.<MetadataStorageConnectorConfig>ofInstance(
+        new MetadataStorageConnectorConfig() {
+          @Override
+          public String getConnectURI() {
+            return uri;
+          }
+
+          @Override
+          public String getUser() {
+            return username;
+          }
+
+          @Override
+          public String getPassword() {
+            return password;
+          }
+        });
+
+    if (dbType.equals("mysql")) {
+      return new MySQLConnector(storageConnectorConfigSupplier,
+          Suppliers.ofInstance(druidMetadataStorageTablesConfig)
+      );
+    } else if (dbType.equals("postgresql")) {
+      return new PostgreSQLConnector(storageConnectorConfigSupplier,
+          Suppliers.ofInstance(druidMetadataStorageTablesConfig)
+      );
+    } else {
+      throw new IllegalStateException(String.format("Unknown metadata storage type [%s]", dbType));
+    }
+  }
 }

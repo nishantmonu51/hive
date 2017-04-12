@@ -17,30 +17,12 @@
  */
 package org.apache.hadoop.hive.druid;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Function;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
-import com.google.common.base.Strings;
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
-import com.google.common.base.Throwables;
-import com.google.common.collect.FluentIterable;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
-import com.metamx.common.RetryUtils;
-import com.metamx.common.lifecycle.Lifecycle;
-import com.metamx.http.client.HttpClient;
-import com.metamx.http.client.HttpClientConfig;
-import com.metamx.http.client.HttpClientInit;
 import io.druid.indexer.SQLMetadataStorageUpdaterJobHandler;
-import io.druid.metadata.MetadataStorageConnectorConfig;
 import io.druid.metadata.MetadataStorageTablesConfig;
 import io.druid.metadata.SQLMetadataConnector;
-import io.druid.metadata.storage.mysql.MySQLConnector;
-import io.druid.metadata.storage.postgresql.PostgreSQLConnector;
 import io.druid.segment.loading.SegmentLoadingException;
 import io.druid.timeline.DataSegment;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -56,7 +38,6 @@ import org.apache.hadoop.hive.metastore.HiveMetaHook;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
-import org.apache.hadoop.hive.ql.metadata.DefaultStorageHandler;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.HiveStorageHandler;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
@@ -67,13 +48,28 @@ import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.OutputFormat;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
+import com.google.common.base.Strings;
+import com.google.common.base.Throwables;
+import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
+import com.metamx.common.RetryUtils;
+import com.metamx.common.lifecycle.Lifecycle;
+import com.metamx.http.client.HttpClient;
+import com.metamx.http.client.HttpClientConfig;
+import com.metamx.http.client.HttpClientInit;
+
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Period;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -81,6 +77,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+
+import javax.annotation.Nullable;
 
 /**
  * DruidStorageHandler provides a HiveStorageHandler implementation for Druid.
@@ -112,45 +110,8 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
     //this is the default value in druid
     final String base = HiveConf
             .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_BASE);
-    final String dbType = HiveConf
-            .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_TYPE);
-    final String username = HiveConf
-            .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_USERNAME);
-    final String password = HiveConf
-            .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_PASSWORD);
-    final String uri = HiveConf
-            .getVar(SessionState.getSessionConf(), HiveConf.ConfVars.DRUID_METADATA_DB_URI);
     druidMetadataStorageTablesConfig = MetadataStorageTablesConfig.fromBase(base);
-
-    final Supplier<MetadataStorageConnectorConfig> storageConnectorConfigSupplier = Suppliers.<MetadataStorageConnectorConfig>ofInstance(
-            new MetadataStorageConnectorConfig() {
-              @Override
-              public String getConnectURI() {
-                return uri;
-              }
-
-              @Override
-              public String getUser() {
-                return username;
-              }
-
-              @Override
-              public String getPassword() {
-                return password;
-              }
-            });
-
-    if (dbType.equals("mysql")) {
-      connector = new MySQLConnector(storageConnectorConfigSupplier,
-              Suppliers.ofInstance(druidMetadataStorageTablesConfig)
-      );
-    } else if (dbType.equals("postgresql")) {
-      connector = new PostgreSQLConnector(storageConnectorConfigSupplier,
-              Suppliers.ofInstance(druidMetadataStorageTablesConfig)
-      );
-    } else {
-      throw new IllegalStateException(String.format("Unknown metadata storage type [%s]", dbType));
-    }
+    connector = DruidStorageHandlerUtils.createSqlMetadataConnector();
     druidSqlMetadataStorageUpdaterJobHandler = new SQLMetadataStorageUpdaterJobHandler(connector);
   }
 
@@ -232,6 +193,10 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
 
   @Override
   public void rollbackCreateTable(Table table) throws MetaException {
+    deleteGeneratedSegments(table);
+  }
+
+  private void deleteGeneratedSegments(Table table) throws MetaException {
     if (MetaStoreUtils.isExternalTable(table)) {
       return;
     }
@@ -256,6 +221,10 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
 
   @Override
   public void commitCreateTable(Table table) throws MetaException {
+    commitSegmentsToMetadataStore(table);
+  }
+
+  private void commitSegmentsToMetadataStore(Table table) throws MetaException {
     if (MetaStoreUtils.isExternalTable(table)) {
       return;
     }
@@ -490,20 +459,19 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
       LOG.debug(String.format("commit insert overwrite into table [%s]", table.getTableName()));
       this.commitCreateTable(table);
     } else {
-      throw new MetaException("Insert into is not supported yet");
+      LOG.debug(String.format("commit insert into table [%s]", table.getTableName()));
+      this.commitSegmentsToMetadataStore(table);
     }
   }
 
   @Override
   public void preInsertTable(Table table, boolean overwrite) throws MetaException {
-    if (!overwrite) {
-      throw new MetaException("INSERT INTO statement is not allowed by druid storage handler");
-    }
+    // Check if table has been already created ??
   }
 
   @Override
   public void rollbackInsertTable(Table table, boolean overwrite) throws MetaException {
-    // do nothing
+    deleteGeneratedSegments(table);
   }
 
   @Override
@@ -511,6 +479,11 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
   ) {
     jobProperties.put(Constants.DRUID_SEGMENT_VERSION, new DateTime().toString());
     jobProperties.put(Constants.DRUID_JOB_WORKING_DIRECTORY, getStagingWorkingDir().toString());
+    // Druid Output format needs to be know if we are appending or overwriting.
+    if (tableDesc.getProperties().getProperty(Constants.INSERT_OVERWRITE) != null) {
+      jobProperties.put(Constants.INSERT_OVERWRITE,
+          tableDesc.getProperties().getProperty(Constants.INSERT_OVERWRITE));
+    }
   }
 
   @Override
