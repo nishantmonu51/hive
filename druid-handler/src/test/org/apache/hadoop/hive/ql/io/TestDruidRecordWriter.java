@@ -156,7 +156,7 @@ public class TestDruidRecordWriter {
             DruidStorageHandler.SEGMENTS_DESCRIPTOR_DIR_NAME
     );
     druidRecordWriter = new DruidRecordWriter(dataSchema, tuningConfig, dataSegmentPusher, 20,
-            segmentDescriptroPath, localFileSystem
+            segmentDescriptroPath, localFileSystem, true
     );
 
     List<DruidWritable> druidWritables = Lists.transform(expectedRows,
