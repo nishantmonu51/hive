@@ -17,22 +17,6 @@
  */
 package org.apache.hadoop.hive.druid;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Function;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
-import com.google.common.base.Strings;
-import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
-import com.google.common.base.Throwables;
-import com.google.common.collect.FluentIterable;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
-import com.metamx.common.RetryUtils;
-import com.metamx.common.lifecycle.Lifecycle;
-import com.metamx.http.client.HttpClient;
-import com.metamx.http.client.HttpClientConfig;
-import com.metamx.http.client.HttpClientInit;
 import io.druid.indexer.SQLMetadataStorageUpdaterJobHandler;
 import io.druid.metadata.MetadataStorageConnectorConfig;
 import io.druid.metadata.MetadataStorageTablesConfig;
@@ -41,6 +25,7 @@ import io.druid.metadata.storage.mysql.MySQLConnector;
 import io.druid.metadata.storage.postgresql.PostgreSQLConnector;
 import io.druid.segment.loading.SegmentLoadingException;
 import io.druid.timeline.DataSegment;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -56,7 +41,6 @@ import org.apache.hadoop.hive.metastore.HiveMetaHook;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Table;
-import org.apache.hadoop.hive.ql.metadata.DefaultStorageHandler;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.HiveStorageHandler;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
@@ -67,13 +51,33 @@ import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.OutputFormat;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Function;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
+import com.google.common.base.Strings;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import com.google.common.base.Throwables;
+import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import com.metamx.common.RetryUtils;
+import com.metamx.common.lifecycle.Lifecycle;
+import com.metamx.http.client.HttpClient;
+import com.metamx.http.client.HttpClientConfig;
+import com.metamx.http.client.HttpClientInit;
+
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
+import org.joda.time.Interval;
 import org.joda.time.Period;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -81,6 +85,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+
+import javax.annotation.Nullable;
 
 /**
  * DruidStorageHandler provides a HiveStorageHandler implementation for Druid.
@@ -93,6 +99,8 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
   protected static final SessionState.LogHelper console = new SessionState.LogHelper(LOG);
 
   public static final String SEGMENTS_DESCRIPTOR_DIR_NAME = "segmentsDescriptorDir";
+
+  public static final String EXISTING_SEGMENTS_FILE_NAME = "existingSegments.json";
 
   private final SQLMetadataConnector connector;
 
@@ -232,6 +240,10 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
 
   @Override
   public void rollbackCreateTable(Table table) throws MetaException {
+    deleteGeneratedSegments(table);
+  }
+
+  private void deleteGeneratedSegments(Table table) throws MetaException {
     if (MetaStoreUtils.isExternalTable(table)) {
       return;
     }
@@ -256,6 +268,10 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
 
   @Override
   public void commitCreateTable(Table table) throws MetaException {
+    commitSegmentsToMetadataStore(table);
+  }
+
+  private void commitSegmentsToMetadataStore(Table table) throws MetaException {
     if (MetaStoreUtils.isExternalTable(table)) {
       return;
     }
@@ -490,15 +506,30 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
       LOG.debug(String.format("commit insert overwrite into table [%s]", table.getTableName()));
       this.commitCreateTable(table);
     } else {
-      throw new MetaException("Insert into is not supported yet");
+      LOG.debug(String.format("commit insert into table [%s]", table.getTableName()));
+      this.commitSegmentsToMetadataStore(table);
     }
   }
 
   @Override
   public void preInsertTable(Table table, boolean overwrite) throws MetaException {
-    if (!overwrite) {
-      throw new MetaException("INSERT INTO statement is not allowed by druid storage handler");
+    Path existingSegmentsFile = getExistingSegmentsFilePath();
+    List<DataSegment> maxSegmentsList = overwrite ?
+        Lists.<DataSegment>newArrayList() :
+        DruidStorageHandlerUtils
+            .getMaxPartitionSegments(connector, druidMetadataStorageTablesConfig,
+                table.getParameters().get(Constants.DRUID_DATA_SOURCE));
+    try {
+      DruidStorageHandlerUtils.writeSegmentsList(existingSegmentsFile.getFileSystem(getConf()),
+          existingSegmentsFile,
+          maxSegmentsList);
+    } catch (IOException e) {
+      throw Throwables.propagate(e);
     }
+  }
+
+  private Path getExistingSegmentsFilePath() {
+    return new Path(getStagingWorkingDir(), EXISTING_SEGMENTS_FILE_NAME);
   }
 
   @Override

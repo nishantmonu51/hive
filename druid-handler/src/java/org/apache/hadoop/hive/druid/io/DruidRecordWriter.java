@@ -24,11 +24,14 @@ import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.metamx.common.Granularity;
 import io.druid.data.input.Committer;
 import io.druid.data.input.InputRow;
 import io.druid.data.input.MapBasedInputRow;
+import io.druid.metadata.MetadataStorageTablesConfig;
+import io.druid.metadata.SQLMetadataConnector;
 import io.druid.segment.indexing.DataSchema;
 import io.druid.segment.indexing.RealtimeTuningConfig;
 import io.druid.segment.loading.DataSegmentPusher;
@@ -40,12 +43,19 @@ import io.druid.segment.realtime.appenderator.SegmentNotWritableException;
 import io.druid.segment.realtime.appenderator.SegmentsAndMetadata;
 import io.druid.segment.realtime.plumber.Committers;
 import io.druid.timeline.DataSegment;
+import io.druid.timeline.TimelineObjectHolder;
+import io.druid.timeline.VersionedIntervalTimeline;
 import io.druid.timeline.partition.LinearShardSpec;
+import io.druid.timeline.partition.NumberedShardSpec;
+import io.druid.timeline.partition.PartitionChunk;
+
 import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.Constants;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
 import org.apache.hadoop.hive.druid.serde.DruidWritable;
 import org.apache.hadoop.io.NullWritable;
@@ -85,13 +95,16 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
 
   private final Supplier<Committer> committerSupplier;
 
+  private final VersionedIntervalTimeline<String, DataSegment> existingSegmentsTimeline;
+
   public DruidRecordWriter(
           DataSchema dataSchema,
           RealtimeTuningConfig realtimeTuningConfig,
           DataSegmentPusher dataSegmentPusher,
           int maxPartitionSize,
           final Path segmentsDescriptorsDir,
-          final FileSystem fileSystem
+          final FileSystem fileSystem,
+          VersionedIntervalTimeline<String, DataSegment> existingSegmentsTimeline
   ) {
     File basePersistDir = new File(realtimeTuningConfig.getBasePersistDirectory(),
             UUID.randomUUID().toString()
@@ -114,6 +127,7 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
             .checkNotNull(segmentsDescriptorsDir, "segmentsDescriptorsDir is null");
     this.fileSystem = Preconditions.checkNotNull(fileSystem, "file system is null");
     committerSupplier = Suppliers.ofInstance(Committers.nil());
+    this.existingSegmentsTimeline = existingSegmentsTimeline;
   }
 
   /**
@@ -136,16 +150,7 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
     );
 
     SegmentIdentifier retVal;
-    if (currentOpenSegment == null) {
-      retVal = new SegmentIdentifier(
-              dataSchema.getDataSource(),
-              interval,
-              tuningConfig.getVersioningPolicy().getVersion(interval),
-              new LinearShardSpec(0)
-      );
-      currentOpenSegment = retVal;
-      return retVal;
-    } else if (currentOpenSegment.getInterval().equals(interval)) {
+    if ( currentOpenSegment != null && currentOpenSegment.getInterval().equals(interval)) {
       retVal = currentOpenSegment;
       int rowCount = appenderator.getRowCount(retVal);
       if (rowCount < maxPartitionSize) {
@@ -154,7 +159,7 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
         retVal = new SegmentIdentifier(
                 dataSchema.getDataSource(),
                 interval,
-                tuningConfig.getVersioningPolicy().getVersion(interval),
+                currentOpenSegment.getVersion(),
                 new LinearShardSpec(currentOpenSegment.getShardSpec().getPartitionNum() + 1)
         );
         pushSegments(Lists.newArrayList(currentOpenSegment));
@@ -164,13 +169,75 @@ public class DruidRecordWriter implements RecordWriter<NullWritable, DruidWritab
         return retVal;
       }
     } else {
-      retVal = new SegmentIdentifier(
-              dataSchema.getDataSource(),
-              interval,
-              tuningConfig.getVersioningPolicy().getVersion(interval),
-              new LinearShardSpec(0)
-      );
-      pushSegments(Lists.newArrayList(currentOpenSegment));
+      // Lookup with incomplete partitions as we only set partitions with max ID for each interval
+      List<TimelineObjectHolder<String, DataSegment>> existingChunks = Lists.newArrayList(existingSegmentsTimeline
+          .lookupWithIncompletePartitions(interval));
+
+      if (existingChunks.size() > 1) {
+        // Not possible to expand more than one chunk with a single segment.
+        throw new IllegalStateException(
+            String.format(
+            "Cannot allocate new segment for dataSource[%s], interval[%s], already have [%,d] chunks.",
+            dataSchema.getDataSource(),
+            interval,
+            existingChunks.size()
+            )
+        );
+      }
+
+      SegmentIdentifier max = null;
+
+      if (!existingChunks.isEmpty()) {
+        TimelineObjectHolder<String, DataSegment> existingHolder = Iterables.getOnlyElement(existingChunks);
+        for (PartitionChunk<DataSegment> existing : existingHolder.getObject()) {
+          if (max == null || max.getShardSpec().getPartitionNum() < existing.getObject()
+              .getShardSpec()
+              .getPartitionNum()) {
+            max = SegmentIdentifier.fromDataSegment(existing.getObject());
+          }
+        }
+      }
+
+      if(max == null){
+        // No existing segments for current interval
+        retVal = new SegmentIdentifier(
+            dataSchema.getDataSource(),
+            interval,
+            tuningConfig.getVersioningPolicy().getVersion(interval),
+            new LinearShardSpec(0)
+        );
+      } else if (max.getShardSpec() instanceof LinearShardSpec) {
+        retVal =  new SegmentIdentifier(
+            dataSchema.getDataSource(),
+            max.getInterval(),
+            max.getVersion(),
+            new LinearShardSpec(max.getShardSpec().getPartitionNum() + 1)
+        );
+      } else if (max.getShardSpec() instanceof NumberedShardSpec) {
+        retVal = new SegmentIdentifier(
+            dataSchema.getDataSource(),
+            max.getInterval(),
+            max.getVersion(),
+            new NumberedShardSpec(
+                max.getShardSpec().getPartitionNum() + 1,
+                ((NumberedShardSpec) max.getShardSpec()).getPartitions()
+            )
+        );
+      } else {
+        throw new IllegalStateException(
+            String.format(
+            "Cannot allocate new segment for dataSource[%s], interval[%s]: ShardSpec class[%s] used by [%s].",
+            dataSchema.getDataSource(),
+            interval,
+            max.getShardSpec().getClass(),
+            max.getIdentifierAsString()
+        )
+        );
+      }
+
+      if(currentOpenSegment != null) {
+        pushSegments(Lists.newArrayList(currentOpenSegment));
+      }
       LOG.info("Creating segment {}", retVal.getIdentifierAsString());
       currentOpenSegment = retVal;
       return retVal;

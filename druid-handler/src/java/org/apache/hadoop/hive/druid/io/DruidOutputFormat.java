@@ -41,12 +41,16 @@ import io.druid.segment.loading.DataSegmentPusher;
 import io.druid.segment.realtime.plumber.CustomVersioningPolicy;
 import io.druid.storage.hdfs.HdfsDataSegmentPusher;
 import io.druid.storage.hdfs.HdfsDataSegmentPusherConfig;
+import io.druid.timeline.DataSegment;
+import io.druid.timeline.VersionedIntervalTimeline;
+
 import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.druid.DruidStorageHandler;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
 import org.apache.hadoop.hive.druid.serde.DruidWritable;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
@@ -216,10 +220,15 @@ public class DruidOutputFormat<K, V> implements HiveOutputFormat<K, DruidWritabl
             null
     );
 
+    Path existingSegmentsPath = new Path(workingPath, DruidStorageHandler.EXISTING_SEGMENTS_FILE_NAME);
+    VersionedIntervalTimeline<String, DataSegment> existingSegmentsTimeline = DruidStorageHandlerUtils
+        .getExistingSegmentsTimeline(existingSegmentsPath.getFileSystem(jc), existingSegmentsPath);
+
     LOG.debug(String.format("running with Data schema [%s] ", dataSchema));
     return new DruidRecordWriter(dataSchema, realtimeTuningConfig, hdfsDataSegmentPusher,
             maxPartitionSize, new Path(workingPath, SEGMENTS_DESCRIPTOR_DIR_NAME),
-            finalOutPath.getFileSystem(jc)
+            finalOutPath.getFileSystem(jc),
+            existingSegmentsTimeline
     );
   }
 

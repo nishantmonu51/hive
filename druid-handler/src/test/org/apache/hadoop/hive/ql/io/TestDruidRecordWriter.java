@@ -23,6 +23,7 @@ import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Ordering;
 import com.metamx.common.Granularity;
 import io.druid.data.input.Firehose;
 import io.druid.data.input.InputRow;
@@ -50,6 +51,8 @@ import io.druid.segment.loading.SegmentLoadingException;
 import io.druid.segment.realtime.firehose.IngestSegmentFirehose;
 import io.druid.segment.realtime.firehose.WindowedStorageAdapter;
 import io.druid.timeline.DataSegment;
+import io.druid.timeline.VersionedIntervalTimeline;
+
 import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -152,7 +155,8 @@ public class TestDruidRecordWriter {
             DruidStorageHandler.SEGMENTS_DESCRIPTOR_DIR_NAME
     );
     druidRecordWriter = new DruidRecordWriter(dataSchema, tuningConfig, dataSegmentPusher, 20,
-            segmentDescriptroPath, localFileSystem
+            segmentDescriptroPath, localFileSystem, new VersionedIntervalTimeline(
+        Ordering.<DataSegment>natural())
     );
 
     List<DruidWritable> druidWritables = Lists.transform(expectedRows,

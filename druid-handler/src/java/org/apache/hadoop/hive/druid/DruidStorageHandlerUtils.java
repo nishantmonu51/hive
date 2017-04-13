@@ -17,15 +17,23 @@
  */
 package org.apache.hadoop.hive.druid;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.NamedType;
 import com.fasterxml.jackson.dataformat.smile.SmileFactory;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Interner;
 import com.google.common.collect.Interners;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 import com.google.common.io.CharStreams;
+import com.metamx.common.IAE;
 import com.metamx.common.MapUtils;
 import com.metamx.emitter.EmittingLogger;
 import com.metamx.emitter.core.NoopEmitter;
@@ -33,30 +41,46 @@ import com.metamx.emitter.service.ServiceEmitter;
 import com.metamx.http.client.HttpClient;
 import com.metamx.http.client.Request;
 import com.metamx.http.client.response.InputStreamResponseHandler;
+
+import io.druid.common.utils.JodaUtils;
 import io.druid.jackson.DefaultObjectMapper;
+import io.druid.metadata.MetadataStorageConnectorConfig;
 import io.druid.metadata.MetadataStorageTablesConfig;
 import io.druid.metadata.SQLMetadataConnector;
 import io.druid.metadata.storage.mysql.MySQLConnector;
+import io.druid.metadata.storage.postgresql.PostgreSQLConnector;
 import io.druid.query.BaseQuery;
 import io.druid.segment.IndexIO;
 import io.druid.segment.IndexMergerV9;
 import io.druid.segment.column.ColumnConfig;
+import io.druid.segment.realtime.appenderator.SegmentIdentifier;
 import io.druid.timeline.DataSegment;
+import io.druid.timeline.TimelineObjectHolder;
+import io.druid.timeline.VersionedIntervalTimeline;
 import io.druid.timeline.partition.LinearShardSpec;
+import io.druid.timeline.partition.NumberedShardSpec;
+import io.druid.timeline.partition.PartitionChunk;
+import jodd.util.collection.JoddArrayList;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.JavaUtils;
+import org.apache.hadoop.hive.conf.Constants;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryProxy;
 import org.apache.hadoop.util.StringUtils;
 import org.jboss.netty.handler.codec.http.HttpHeaders;
 import org.jboss.netty.handler.codec.http.HttpMethod;
+import org.joda.time.Interval;
 import org.skife.jdbi.v2.FoldController;
 import org.skife.jdbi.v2.Folder3;
 import org.skife.jdbi.v2.Handle;
+import org.skife.jdbi.v2.Query;
+import org.skife.jdbi.v2.ResultIterator;
 import org.skife.jdbi.v2.StatementContext;
 import org.skife.jdbi.v2.TransactionCallback;
 import org.skife.jdbi.v2.TransactionStatus;
@@ -92,6 +116,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 import static org.apache.hadoop.hive.ql.exec.Utilities.jarFinderGetJar;
+import static org.apache.hadoop.hive.ql.exec.Utilities.makeProperties;
 
 /**
  * Utils class for Druid storage handler.
@@ -467,4 +492,134 @@ public final class DruidStorageHandlerUtils {
     conf.set("tmpjars", StringUtils.arrayToString(jars.toArray(new String[jars.size()])));
   }
 
+  public static void writeSegmentsList(
+      final FileSystem outputFS,
+      final Path outputPath,
+      final List<DataSegment> segments
+  )
+      throws IOException {
+    final DataPusher pusher = (DataPusher) RetryProxy.create(
+        DataPusher.class, new DataPusher() {
+          @Override
+          public long push() throws IOException {
+            try {
+              if (outputFS.exists(outputPath)) {
+                if (!outputFS.delete(outputPath, false)) {
+                  throw new IOException(
+                      String.format("Failed to delete descriptor at [%s]", outputPath));
+                }
+              }
+              try (final OutputStream descriptorOut = outputFS.create(
+                  outputPath,
+                  true,
+                  DEFAULT_FS_BUFFER_SIZE
+              )) {
+                JSON_MAPPER.writeValue(descriptorOut, segments);
+                descriptorOut.flush();
+              }
+            } catch (RuntimeException | IOException ex) {
+              throw ex;
+            }
+            return -1;
+          }
+        },
+        RetryPolicies
+            .exponentialBackoffRetry(NUM_RETRIES, SECONDS_BETWEEN_RETRIES, TimeUnit.SECONDS)
+    );
+    pusher.push();
+  }
+
+  public static VersionedIntervalTimeline<String, DataSegment> getExistingSegmentsTimeline(FileSystem fileSystem, Path existingSegmentsPath)
+      throws IOException {
+   List<DataSegment> existingSegments = JSON_MAPPER
+        .readValue(fileSystem.open(existingSegmentsPath),
+            new TypeReference<List<DataSegment>>() {
+            });
+    final VersionedIntervalTimeline<String, DataSegment> timeline = new VersionedIntervalTimeline<>(
+        Ordering.natural()
+    );
+    for(DataSegment segment : existingSegments){
+      timeline.add(segment.getInterval(), segment.getVersion(),
+          segment.getShardSpec().createChunk(segment));
+    }
+    return timeline;
+  }
+
+
+  public static List<DataSegment> getMaxPartitionSegments(SQLMetadataConnector connector,
+      final MetadataStorageTablesConfig metadataStorageTablesConfig, final String dataSource) {
+    return connector.retryTransaction(
+        new TransactionCallback<List<DataSegment>>() {
+          @Override
+          public List<DataSegment> inTransaction(Handle handle, TransactionStatus transactionStatus)
+              throws Exception {
+            // Make up a pending segment based on existing segments
+            final List<DataSegment> maxSegmentsList = Lists.<DataSegment>newArrayList();
+
+            final List<TimelineObjectHolder<String, DataSegment>> existingChunks = getTimelineForDataSourceWithHandle(
+                metadataStorageTablesConfig,
+                handle,
+                dataSource
+            ).lookup(new Interval(JodaUtils.MIN_INSTANT, JodaUtils.MAX_INSTANT));
+
+            if (existingChunks.size() > 1) {
+              // Not possible to expand more than one chunk with a single segment.
+              return null; // throw exception
+            }
+            for(TimelineObjectHolder<String, DataSegment> chunk: existingChunks) {
+              DataSegment max = null;
+              for (PartitionChunk<DataSegment> existing : chunk.getObject()) {
+                if (max == null || max.getShardSpec().getPartitionNum() < existing.getObject()
+                    .getShardSpec()
+                    .getPartitionNum()) {
+                  max = existing.getObject();
+                }
+              }
+              maxSegmentsList.add(max);
+            }
+            return maxSegmentsList;
+          }
+        },
+        0,
+        NUM_RETRIES
+    );
+  }
+
+  private static VersionedIntervalTimeline<String, DataSegment> getTimelineForDataSourceWithHandle(
+      final MetadataStorageTablesConfig metadataStorageTablesConfig,
+      final Handle handle,
+      final String dataSource
+    ) throws IOException {
+    Query<Map<String, Object>> sql = handle.createQuery(
+        String.format(
+            "SELECT payload FROM %s WHERE used = true AND dataSource = ?",
+            metadataStorageTablesConfig.getSegmentsTable()
+        )
+    ).bind(0, dataSource);
+
+    final ResultIterator<byte[]> dbSegments = sql
+        .map(ByteArrayMapper.FIRST)
+        .iterator();
+
+    final VersionedIntervalTimeline<String, DataSegment> timeline = new VersionedIntervalTimeline<>(
+        Ordering.natural()
+    );
+
+    while (dbSegments.hasNext()) {
+      final byte[] payload = dbSegments.next();
+
+      DataSegment segment = DruidStorageHandlerUtils.JSON_MAPPER.readValue(
+          payload,
+          DataSegment.class
+      );
+
+      timeline.add(segment.getInterval(), segment.getVersion(),
+          segment.getShardSpec().createChunk(segment));
+
+    }
+
+    dbSegments.close();
+
+    return timeline;
+  }
 }
