@@ -17,8 +17,16 @@
  */
 package org.apache.hadoop.hive.druid;
 
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.util.VersionUtil;
+import com.fasterxml.jackson.databind.InjectableValues;
+import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.jsontype.NamedType;
+import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.dataformat.smile.SmileFactory;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
@@ -34,10 +42,12 @@ import com.metamx.http.client.HttpClient;
 import com.metamx.http.client.Request;
 import com.metamx.http.client.response.InputStreamResponseHandler;
 import io.druid.jackson.DefaultObjectMapper;
+import io.druid.java.util.common.granularity.PeriodGranularity;
 import io.druid.metadata.MetadataStorageTablesConfig;
 import io.druid.metadata.SQLMetadataConnector;
 import io.druid.metadata.storage.mysql.MySQLConnector;
 import io.druid.query.BaseQuery;
+import io.druid.query.select.SelectQueryConfig;
 import io.druid.segment.IndexIO;
 import io.druid.segment.IndexMergerV9;
 import io.druid.segment.column.ColumnConfig;
@@ -47,13 +57,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.io.retry.RetryPolicies;
 import org.apache.hadoop.io.retry.RetryProxy;
 import org.apache.hadoop.util.StringUtils;
 import org.jboss.netty.handler.codec.http.HttpHeaders;
 import org.jboss.netty.handler.codec.http.HttpMethod;
+import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
 import org.skife.jdbi.v2.FoldController;
 import org.skife.jdbi.v2.Folder3;
 import org.skife.jdbi.v2.Handle;
@@ -70,17 +81,12 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.URL;
-import java.net.URLDecoder;
 import java.net.UnknownHostException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Enumeration;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -88,10 +94,6 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
-
-import static org.apache.hadoop.hive.ql.exec.Utilities.jarFinderGetJar;
 
 /**
  * Utils class for Druid storage handler.
@@ -111,6 +113,50 @@ public final class DruidStorageHandlerUtils {
    * Mapper to use to serialize/deserialize Druid objects (SMILE)
    */
   public static final ObjectMapper SMILE_MAPPER = new DefaultObjectMapper(new SmileFactory());
+
+  public static class PeriodGranularitySerializer extends JsonSerializer<PeriodGranularity>{
+
+    @Override
+    public void serialize(PeriodGranularity granularity, JsonGenerator jsonGenerator,
+        SerializerProvider serializerProvider) throws IOException, JsonProcessingException {
+      // Set timezone based on user timezone if origin is not already set
+      // as it is default Hive time semantics to consider user timezone.
+      PeriodGranularity granularityWithUserTimezone = new PeriodGranularity(
+          granularity.getPeriod(),
+          granularity.getOrigin(),
+          DateTimeZone.getDefault()
+          );
+      granularityWithUserTimezone.serialize(jsonGenerator, serializerProvider);
+    }
+
+    @Override
+    public void serializeWithType(PeriodGranularity value, JsonGenerator gen,
+        SerializerProvider serializers, TypeSerializer typeSer) throws IOException {
+      serialize(value, gen, serializers);
+    }
+  }
+
+  public static class HiveDruidSerializationModule extends SimpleModule {
+    private static final String NAME = "HiveDruidSerializationModule";
+    private static final VersionUtil VERSION_UTIL = new VersionUtil() {};
+
+    public HiveDruidSerializationModule() {
+      super(NAME, VERSION_UTIL.version());
+      addSerializer(PeriodGranularity.class, new PeriodGranularitySerializer());
+    }
+  }
+
+  static
+  {
+    InjectableValues.Std injectableValues = new InjectableValues.Std().addValue(
+        SelectQueryConfig.class,
+        new SelectQueryConfig(false)
+    );
+    JSON_MAPPER.setInjectableValues(injectableValues);
+    SMILE_MAPPER.setInjectableValues(injectableValues);
+    JSON_MAPPER.registerModule(new HiveDruidSerializationModule());
+    SMILE_MAPPER.registerModule(new HiveDruidSerializationModule());
+  }
 
   private static final int NUM_RETRIES = 8;
 
