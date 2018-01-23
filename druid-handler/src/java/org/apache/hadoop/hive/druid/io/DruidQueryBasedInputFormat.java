@@ -36,6 +36,7 @@ import org.apache.hadoop.hive.druid.DruidStorageHandler;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
 import org.apache.hadoop.hive.druid.serde.DruidGroupByQueryRecordReader;
 import org.apache.hadoop.hive.druid.serde.DruidQueryRecordReader;
+import org.apache.hadoop.hive.druid.serde.DruidScanQueryRecordReader;
 import org.apache.hadoop.hive.druid.serde.DruidSelectQueryRecordReader;
 import org.apache.hadoop.hive.druid.serde.DruidTimeseriesQueryRecordReader;
 import org.apache.hadoop.hive.druid.serde.DruidTopNQueryRecordReader;
@@ -93,6 +94,8 @@ public class DruidQueryBasedInputFormat extends InputFormat<NullWritable, DruidW
       return new DruidGroupByQueryRecordReader();
     case Query.SELECT:
       return new DruidSelectQueryRecordReader();
+    case Query.SCAN:
+      return new DruidScanQueryRecordReader();
     }
     return null;
   }
@@ -149,6 +152,7 @@ public class DruidQueryBasedInputFormat extends InputFormat<NullWritable, DruidW
       case Query.TIMESERIES:
       case Query.TOPN:
       case Query.GROUP_BY:
+    case Query.SCAN:
         return new HiveDruidSplit[] { new HiveDruidSplit(deserializeSerialize(druidQuery),
                 paths[0], new String[] {address}) };
       case Query.SELECT:
