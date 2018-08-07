@@ -34,6 +34,7 @@ public class IOContext {
   private long currentRow;
   private boolean isBlockPointer;
   private boolean ioExceptions;
+  private boolean isHeaderOrFooterSkippable;
 
   // Are we using the fact the input is sorted
   private boolean useSorted = false;
@@ -65,6 +66,7 @@ public class IOContext {
     this.currentRow = 0;
     this.isBlockPointer = true;
     this.ioExceptions = false;
+    this.isHeaderOrFooterSkippable = true;
   }
 
   public long getCurrentBlockStart() {
@@ -137,6 +139,14 @@ public class IOContext {
 
   public void setEndBinarySearch(boolean endBinarySearch) {
     this.endBinarySearch = endBinarySearch;
+  }
+
+  public boolean isHeaderOrFooterSkippable() {
+    return isHeaderOrFooterSkippable;
+  }
+
+  public void setHeaderOrFooterSkippable(boolean headerOrFooterSkippable) {
+    isHeaderOrFooterSkippable = headerOrFooterSkippable;
   }
 
   public Comparison getComparison() {

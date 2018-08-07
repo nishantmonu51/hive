@@ -178,6 +178,8 @@ public abstract class HiveContextAwareRecordReader<K, V> implements RecordReader
   public void initIOContext(FileSplit split, JobConf job,
       Class inputFormatClass) throws IOException {
     this.initIOContext(split, job, inputFormatClass, null);
+    // only skip Header/Footer rows for plain text files.
+    ioCxtRef.setHeaderOrFooterSkippable(inputFormatClass.getName().contains("TextInputFormat"));
   }
 
   public void initIOContext(FileSplit split, JobConf job,
@@ -314,7 +316,7 @@ public abstract class HiveContextAwareRecordReader<K, V> implements RecordReader
        * If file contains footer, used a FooterBuffer to remove footer lines
        * at the end of the table file.
        **/
-      if (this.ioCxtRef.getCurrentBlockStart() == 0) {
+      if (this.ioCxtRef.isHeaderOrFooterSkippable() && this.ioCxtRef.getCurrentBlockStart() == 0) {
 
         // Check if the table file has header to skip.
         footerBuffer = null;
