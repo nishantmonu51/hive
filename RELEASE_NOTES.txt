@@ -73,7 +73,7 @@ Release Notes - Hive - Version 3.1.0
     * [HIVE-19118] - Vectorization: Turning on vectorization in escape_crlf produces wrong results
     * [HIVE-19120] - catalog not properly set for some tables in SQL upgrade scripts
     * [HIVE-19131] - DecimalColumnStatsMergerTest comparison review
-    * [HIVE-19155] - Day time saving cause Druid inserts to fail with org.apache.hive.druid.io.druid.java.util.common.UOE: Cannot add overlapping segments
+    * [HIVE-19155] - Day time saving cause Druid inserts to fail with org.apache.hive.druid.org.apache.druid.java.util.common.UOE: Cannot add overlapping segments
     * [HIVE-19157] - Assert that Insert into Druid Table fails if the publishing of metadata by HS2 fails
     * [HIVE-19167] - Map data type doesn't keep the order of the key/values pairs as read (Part 2, The Sequel or SQL)   
     * [HIVE-19168] - Ranger changes for llap commands
@@ -1633,7 +1633,7 @@ Release Notes - Hive - Version 3.0.0
     * [HIVE-19131] - DecimalColumnStatsMergerTest comparison review
     * [HIVE-19137] - orcfiledump doesn't print hive.acid.version value
     * [HIVE-19151] - Update expected result for some TestNegativeCliDriver tests
-    * [HIVE-19155] - Day time saving cause Druid inserts to fail with org.apache.hive.druid.io.druid.java.util.common.UOE: Cannot add overlapping segments
+    * [HIVE-19155] - Day time saving cause Druid inserts to fail with org.apache.hive.druid.org.apache.druid.java.util.common.UOE: Cannot add overlapping segments
     * [HIVE-19157] - Assert that Insert into Druid Table fails if the publishing of metadata by HS2 fails
     * [HIVE-19167] - Map data type doesn't keep the order of the key/values pairs as read (Part 2, The Sequel or SQL)   
     * [HIVE-19168] - Ranger changes for llap commands

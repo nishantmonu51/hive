@@ -18,17 +18,17 @@
 
 package org.apache.hadoop.hive.druid;
 
-import io.druid.indexer.JobHelper;
-import io.druid.indexer.SQLMetadataStorageUpdaterJobHandler;
-import io.druid.metadata.MetadataStorageTablesConfig;
-import io.druid.segment.loading.DataSegmentPusher;
-import io.druid.segment.loading.SegmentLoadingException;
-import io.druid.storage.hdfs.HdfsDataSegmentPusher;
-import io.druid.storage.hdfs.HdfsDataSegmentPusherConfig;
-import io.druid.timeline.DataSegment;
-import io.druid.timeline.partition.LinearShardSpec;
-import io.druid.timeline.partition.NoneShardSpec;
-import io.druid.timeline.partition.ShardSpec;
+import org.apache.druid.indexer.JobHelper;
+import org.apache.druid.indexer.SQLMetadataStorageUpdaterJobHandler;
+import org.apache.druid.metadata.MetadataStorageTablesConfig;
+import org.apache.druid.segment.loading.DataSegmentPusher;
+import org.apache.druid.segment.loading.SegmentLoadingException;
+import org.apache.druid.storage.hdfs.HdfsDataSegmentPusher;
+import org.apache.druid.storage.hdfs.HdfsDataSegmentPusherConfig;
+import org.apache.druid.timeline.DataSegment;
+import org.apache.druid.timeline.partition.LinearShardSpec;
+import org.apache.druid.timeline.partition.NoneShardSpec;
+import org.apache.druid.timeline.partition.ShardSpec;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;

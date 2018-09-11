@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hive.druid;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -27,39 +28,41 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
-import io.druid.data.input.impl.DimensionSchema;
-import io.druid.data.input.impl.DimensionsSpec;
-import io.druid.data.input.impl.InputRowParser;
-import io.druid.data.input.impl.JSONParseSpec;
-import io.druid.data.input.impl.StringInputRowParser;
-import io.druid.data.input.impl.TimestampSpec;
-import io.druid.java.util.common.Pair;
-import io.druid.java.util.common.RetryUtils;
-import io.druid.java.util.common.lifecycle.Lifecycle;
-import io.druid.java.util.http.client.HttpClient;
-import io.druid.java.util.http.client.HttpClientConfig;
-import io.druid.java.util.http.client.HttpClientInit;
-import io.druid.java.util.http.client.Request;
-import io.druid.java.util.http.client.response.FullResponseHandler;
-import io.druid.java.util.http.client.response.FullResponseHolder;
-import io.druid.metadata.MetadataStorageConnectorConfig;
-import io.druid.metadata.MetadataStorageTablesConfig;
-import io.druid.metadata.SQLMetadataConnector;
-import io.druid.metadata.storage.derby.DerbyConnector;
-import io.druid.metadata.storage.derby.DerbyMetadataStorage;
-import io.druid.metadata.storage.mysql.MySQLConnector;
-import io.druid.metadata.storage.mysql.MySQLConnectorConfig;
-import io.druid.metadata.storage.postgresql.PostgreSQLConnector;
-import io.druid.query.aggregation.AggregatorFactory;
-import io.druid.segment.IndexSpec;
-import io.druid.segment.indexing.DataSchema;
-import io.druid.segment.indexing.granularity.GranularitySpec;
-import io.druid.segment.loading.DataSegmentPusher;
-import io.druid.segment.loading.SegmentLoadingException;
-import io.druid.storage.hdfs.HdfsDataSegmentPusher;
-import io.druid.storage.hdfs.HdfsDataSegmentPusherConfig;
-import io.druid.timeline.DataSegment;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.druid.data.input.impl.DimensionSchema;
+import org.apache.druid.data.input.impl.DimensionsSpec;
+import org.apache.druid.data.input.impl.InputRowParser;
+import org.apache.druid.data.input.impl.JSONParseSpec;
+import org.apache.druid.data.input.impl.StringInputRowParser;
+import org.apache.druid.data.input.impl.TimestampSpec;
+import org.apache.druid.indexing.overlord.supervisor.SupervisorReport;
+import org.apache.druid.java.util.common.Pair;
+import org.apache.druid.java.util.common.RetryUtils;
+import org.apache.druid.java.util.common.lifecycle.Lifecycle;
+import org.apache.druid.java.util.http.client.HttpClient;
+import org.apache.druid.java.util.http.client.HttpClientConfig;
+import org.apache.druid.java.util.http.client.HttpClientInit;
+import org.apache.druid.java.util.http.client.Request;
+import org.apache.druid.java.util.http.client.response.FullResponseHandler;
+import org.apache.druid.java.util.http.client.response.FullResponseHolder;
+import org.apache.druid.metadata.MetadataStorageConnectorConfig;
+import org.apache.druid.metadata.MetadataStorageTablesConfig;
+import org.apache.druid.metadata.SQLMetadataConnector;
+import org.apache.druid.metadata.storage.derby.DerbyConnector;
+import org.apache.druid.metadata.storage.derby.DerbyMetadataStorage;
+import org.apache.druid.metadata.storage.mysql.MySQLConnector;
+import org.apache.druid.metadata.storage.mysql.MySQLConnectorConfig;
+import org.apache.druid.metadata.storage.postgresql.PostgreSQLConnector;
+import org.apache.druid.metadata.storage.postgresql.PostgreSQLConnectorConfig;
+import org.apache.druid.query.aggregation.AggregatorFactory;
+import org.apache.druid.segment.IndexSpec;
+import org.apache.druid.segment.indexing.DataSchema;
+import org.apache.druid.segment.indexing.granularity.GranularitySpec;
+import org.apache.druid.segment.loading.DataSegmentPusher;
+import org.apache.druid.segment.loading.SegmentLoadingException;
+import org.apache.druid.storage.hdfs.HdfsDataSegmentPusher;
+import org.apache.druid.storage.hdfs.HdfsDataSegmentPusherConfig;
+import org.apache.druid.timeline.DataSegment;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -69,7 +72,7 @@ import org.apache.hadoop.hive.druid.io.DruidOutputFormat;
 import org.apache.hadoop.hive.druid.io.DruidQueryBasedInputFormat;
 import org.apache.hadoop.hive.druid.io.DruidRecordWriter;
 import org.apache.hadoop.hive.druid.json.KafkaSupervisorIOConfig;
-import org.apache.hadoop.hive.druid.json.KafkaSupervisorReport;
+import org.apache.hadoop.hive.druid.json.KafkaSupervisorReportPayload;
 import org.apache.hadoop.hive.druid.json.KafkaSupervisorSpec;
 import org.apache.hadoop.hive.druid.json.KafkaSupervisorTuningConfig;
 import org.apache.hadoop.hive.druid.security.KerberosHttpClient;
@@ -356,7 +359,9 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
     return new KafkaSupervisorSpec(dataSchema,
           new KafkaSupervisorTuningConfig(
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxRowsInMemory"),
+              getLongProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxBytesInMemory"),
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxRowsPerSegment"),
+                  getLongProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxTotalRows"),
               getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "intermediatePersistPeriod"),
               null, // basePersistDirectory - use druid default, no need to be configured by user
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxPendingPersists"),
@@ -365,13 +370,18 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
               getBooleanProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "reportParseExceptions"),
               getLongProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "handoffConditionTimeout"),
               getBooleanProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "resetOffsetAutomatically"),
+              null,
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "workerThreads"),
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "chatThreads"),
               getLongProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "chatRetries"),
               getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "httpTimeout"),
               getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "shutdownTimeout"),
-              getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "offsetFetchPeriod")),
-          new KafkaSupervisorIOConfig(kafkaTopic, // Mandatory Property
+              getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "offsetFetchPeriod"),
+              getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "intermediateHandoffPeriod"),
+              getBooleanProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "logParseExceptions"),
+              getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxParseExceptions"),
+              getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "maxSavedParseExceptions")),
+    new KafkaSupervisorIOConfig(kafkaTopic, // Mandatory Property
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "replicas"),
               getIntegerProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "taskCount"),
               getPeriodProperty(table, Constants.DRUID_KAFKA_INGESTION_PROPERTY_PREFIX + "taskDuration"),
@@ -535,7 +545,7 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
    * @return kafka supervisor report or null when druid overlord is unreachable.
    */
   @Nullable
-  private KafkaSupervisorReport fetchKafkaSupervisorReport(Table table) {
+  private SupervisorReport<KafkaSupervisorReportPayload> fetchKafkaSupervisorReport(Table table) {
     final String overlordAddress = Preconditions.checkNotNull(HiveConf
                     .getVar(getConf(), HiveConf.ConfVars.HIVE_DRUID_OVERLORD_DEFAULT_ADDRESS),
             "Druid Overlord Address is null");
@@ -557,7 +567,10 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
       );
       if (response.getStatus().equals(HttpResponseStatus.OK)) {
         return DruidStorageHandlerUtils.JSON_MAPPER
-                .readValue(response.getContent(), KafkaSupervisorReport.class);
+                .readValue(response.getContent(),
+                        new TypeReference<SupervisorReport<KafkaSupervisorReportPayload>>() {
+                        }
+                );
         // Druid Returns 400 Bad Request when not found.
       } else if (response.getStatus().equals(HttpResponseStatus.NOT_FOUND) || response.getStatus().equals(HttpResponseStatus.BAD_REQUEST)) {
         LOG.info("No Kafka Supervisor found for datasource[%s]", dataSourceName);
@@ -974,7 +987,8 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
       );
     } else if (dbType.equals("postgresql")) {
       connector = new PostgreSQLConnector(storageConnectorConfigSupplier,
-          Suppliers.ofInstance(getDruidMetadataStorageTablesConfig())
+          Suppliers.ofInstance(getDruidMetadataStorageTablesConfig()),
+          new PostgreSQLConnectorConfig()
       );
 
     } else if (dbType.equals("derby")) {
@@ -1126,7 +1140,7 @@ public class DruidStorageHandler extends DefaultHiveMetaHook implements HiveStor
   @Override
   public StorageHandlerInfo getStorageHandlerInfo(Table table) throws MetaException {
     if(isKafkaStreamingTable(table)){
-        KafkaSupervisorReport kafkaSupervisorReport = fetchKafkaSupervisorReport(table);
+        SupervisorReport<KafkaSupervisorReportPayload> kafkaSupervisorReport = fetchKafkaSupervisorReport(table);
         if(kafkaSupervisorReport == null){
           return DruidStorageHandlerInfo.UNREACHABLE;
         }

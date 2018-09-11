@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hive.druid.json;
 
-import io.druid.java.util.common.StringUtils;
+import org.apache.druid.java.util.common.StringUtils;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;

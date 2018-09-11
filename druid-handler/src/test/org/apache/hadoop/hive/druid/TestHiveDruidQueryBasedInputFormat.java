@@ -28,7 +28,7 @@ import org.apache.hadoop.hive.druid.io.HiveDruidSplit;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.junit.Test;
 
-import io.druid.query.Query;
+import org.apache.druid.query.Query;
 import junit.framework.TestCase;
 
 public class TestHiveDruidQueryBasedInputFormat extends TestCase {

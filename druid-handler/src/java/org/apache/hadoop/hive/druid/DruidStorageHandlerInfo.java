@@ -17,9 +17,8 @@
  */
 package org.apache.hadoop.hive.druid;
 
-import io.druid.java.util.common.StringUtils;
-
-import org.apache.hadoop.hive.druid.json.KafkaSupervisorReport;
+import org.apache.druid.indexing.overlord.supervisor.SupervisorReport;
+import org.apache.hadoop.hive.druid.json.KafkaSupervisorReportPayload;
 import org.apache.hadoop.hive.ql.metadata.StorageHandlerInfo;
 
 /**
@@ -35,9 +34,9 @@ public class DruidStorageHandlerInfo implements StorageHandlerInfo {
     }
   };
 
-  private final KafkaSupervisorReport kafkaSupervisorReport;
+  private final SupervisorReport<KafkaSupervisorReportPayload> kafkaSupervisorReport;
 
-  DruidStorageHandlerInfo(KafkaSupervisorReport kafkaSupervisorReport) {
+  DruidStorageHandlerInfo(SupervisorReport<KafkaSupervisorReportPayload> kafkaSupervisorReport) {
     this.kafkaSupervisorReport = kafkaSupervisorReport;
   }
 

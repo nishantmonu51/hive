@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.hive.druid.security;
 
-import io.druid.java.util.http.client.response.ClientResponse;
-import io.druid.java.util.http.client.response.HttpResponseHandler;
+import org.apache.druid.java.util.http.client.response.ClientResponse;
+import org.apache.druid.java.util.http.client.response.HttpResponseHandler;
 import org.jboss.netty.handler.codec.http.HttpChunk;
 import org.jboss.netty.handler.codec.http.HttpResponse;
 import org.jboss.netty.handler.codec.http.HttpResponseStatus;

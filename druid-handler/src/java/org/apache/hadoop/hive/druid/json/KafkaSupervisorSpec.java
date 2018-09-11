@@ -18,14 +18,24 @@
 
 package org.apache.hadoop.hive.druid.json;
 
-import io.druid.segment.indexing.DataSchema;
+import com.fasterxml.jackson.annotation.JacksonInject;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.ImmutableList;
+import org.apache.druid.guice.annotations.Json;
+import org.apache.druid.indexing.overlord.IndexerMetadataStorageCoordinator;
+import org.apache.druid.indexing.overlord.supervisor.Supervisor;
+import org.apache.druid.indexing.overlord.supervisor.SupervisorSpec;
+import org.apache.druid.java.util.emitter.service.ServiceEmitter;
+import org.apache.druid.segment.indexing.DataSchema;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.google.common.base.Preconditions;
+import org.apache.druid.server.metrics.DruidMonitorSchedulerConfig;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,7 +50,7 @@ import java.util.Map;
     name = "kafka",
     value = KafkaSupervisorSpec.class
 )})
-public class KafkaSupervisorSpec
+public class KafkaSupervisorSpec implements SupervisorSpec
 {
   private final DataSchema dataSchema;
   private final KafkaSupervisorTuningConfig tuningConfig;
@@ -49,33 +59,40 @@ public class KafkaSupervisorSpec
 
   @JsonCreator
   public KafkaSupervisorSpec(
-      @JsonProperty("dataSchema") DataSchema dataSchema,
-      @JsonProperty("tuningConfig") KafkaSupervisorTuningConfig tuningConfig,
-      @JsonProperty("ioConfig") KafkaSupervisorIOConfig ioConfig,
-      @JsonProperty("context") Map<String, Object> context
+          @JsonProperty("dataSchema") DataSchema dataSchema,
+          @JsonProperty("tuningConfig") KafkaSupervisorTuningConfig tuningConfig,
+          @JsonProperty("ioConfig") KafkaSupervisorIOConfig ioConfig,
+          @JsonProperty("context") Map<String, Object> context
   )
   {
     this.dataSchema = Preconditions.checkNotNull(dataSchema, "dataSchema");
     this.tuningConfig = tuningConfig != null
-                        ? tuningConfig
-                        : new KafkaSupervisorTuningConfig(
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null,
-                            null
-                        );
+            ? tuningConfig
+            : new KafkaSupervisorTuningConfig(
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+            );
     this.ioConfig = Preconditions.checkNotNull(ioConfig, "ioConfig");
     this.context = context;
   }
@@ -105,13 +122,31 @@ public class KafkaSupervisorSpec
   }
 
   @Override
+  public String getId()
+  {
+    return dataSchema.getDataSource();
+  }
+
+  @Override
+  public Supervisor createSupervisor()
+  {
+    return null;
+  }
+
+  @Override
+  public List<String> getDataSources()
+  {
+    return ImmutableList.of(getDataSchema().getDataSource());
+  }
+
+  @Override
   public String toString()
   {
     return "KafkaSupervisorSpec{" +
-           "dataSchema=" + dataSchema +
-           ", tuningConfig=" + tuningConfig +
-           ", ioConfig=" + ioConfig +
-           '}';
+            "dataSchema=" + dataSchema +
+            ", tuningConfig=" + tuningConfig +
+            ", ioConfig=" + ioConfig +
+            '}';
   }
 
   @Override
