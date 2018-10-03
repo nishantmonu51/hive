@@ -47,7 +47,7 @@ public class ResponseCookieHandler<Intermediate, Final> implements HttpResponseH
   }
 
   @Override
-  public ClientResponse<Intermediate> handleResponse(HttpResponse httpResponse)
+  public ClientResponse<Intermediate> handleResponse(HttpResponse httpResponse, TrafficCop trafficCop)
   {
     try {
       final HttpHeaders headers = httpResponse.headers();
@@ -57,16 +57,16 @@ public class ResponseCookieHandler<Intermediate, Final> implements HttpResponseH
       log.error("Error while processing Cookies from header", e);
     }
     finally {
-      return delegate.handleResponse(httpResponse);
+      return delegate.handleResponse(httpResponse, trafficCop);
     }
   }
 
   @Override
   public ClientResponse<Intermediate> handleChunk(
-    ClientResponse<Intermediate> clientResponse, HttpChunk httpChunk
+    ClientResponse<Intermediate> clientResponse, HttpChunk httpChunk, long chunkNum
   )
   {
-    return delegate.handleChunk(clientResponse, httpChunk);
+    return delegate.handleChunk(clientResponse, httpChunk, chunkNum);
   }
 
   @Override

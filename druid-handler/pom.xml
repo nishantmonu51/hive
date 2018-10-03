@@ -171,6 +171,11 @@
       <version>${druid.version}</version>
     </dependency>
     <dependency>
+      <groupId>org.apache.druid.extensions</groupId>
+      <artifactId>druid-bloom-filter</artifactId>
+      <version>${druid.version}</version>
+    </dependency>
+    <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-common</artifactId>
       <scope>provided</scope>
@@ -323,7 +328,6 @@
                     <includes>
                       <include>org.apache.druid:*</include>
                       <include>org.apache.druid.extensions:*</include>
-                      <include>com.metamx:*</include>
                       <include>io.netty:*</include>
                       <include>org.apache.calcite:*</include>
                       <include>com.fasterxml.jackson.core:*</include>
