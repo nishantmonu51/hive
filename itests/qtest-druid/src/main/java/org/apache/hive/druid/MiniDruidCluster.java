@@ -150,6 +150,7 @@ public class MiniDruidCluster extends AbstractService {
             .put("druid.zk.service.host", "localhost:" + zookeeperPort)
             .put("druid.segmentCache.locations", segmentsCache)
             .put("druid.storage.storageDirectory", getDeepStorageDir())
+            .put("druid.lookup.enableLookupSyncOnStartup", "false")
             .put("druid.port", String.valueOf(historicalPort))
             .build();
     Map<String, String>
@@ -157,6 +158,7 @@ public class MiniDruidCluster extends AbstractService {
         brokerMapBuilder.putAll(COMMON_DRUID_CONF)
             .put("druid.zk.service.host", "localhost:" + zookeeperPort)
             .put("druid.port", String.valueOf(brokerPort))
+            .put("druid.lookup.enableLookupSyncOnStartup", "false")
             .build();
     coordinator =
         new ForkingDruidNode("coordinator", classpath, coordinatorProperties, COORDINATOR_JVM_CONF, logDirectory, null);
